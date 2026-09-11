@@ -24,6 +24,7 @@ class AppModel extends ChangeNotifier {
   final Integrations integrations;
   Settings get settings => repository.settings;
   List<Entry> get entries => repository.entries;
+  List<ChatMessage> get chatMessages => repository.chatMessages;
   bool ready = false, busy = false, recording = false, syncing = false;
   int page = 0, captureRevision = 0;
   String? error, notice, syncError, aiProfile, attachmentName;
@@ -47,6 +48,7 @@ class AppModel extends ChangeNotifier {
       notice = repository.recoveryNotice;
       ready = true;
       if (startTimer) {
+        await _connectCodexIfAvailable();
         NativeService.channel.setMethodCallHandler((call) async {
           switch (call.method) {
             case 'capture':
@@ -131,18 +133,107 @@ class AppModel extends ChangeNotifier {
     unawaited(sync());
   });
 
-  Future<void> interpret(
-    String text, {
-    bool includeToday = false,
-  }) => run(() async {
-    if (text.trim().isEmpty) throw const FormatException('Напишите запрос');
-    if (text.length > 20000) {
-      throw const FormatException(
-        'AI-запрос должен быть короче 20 000 символов',
+  Future<void> _connectCodexIfAvailable() async {
+    if (settings.profiles.isNotEmpty) return;
+    try {
+      final raw = await native.call<Map<dynamic, dynamic>>('codexStatus');
+      if (raw?['installed'] != true) return;
+      await repository.configure(
+        (current) => current.copyWith(
+          profiles: [
+            AiProfile(
+              id: newId(),
+              name: 'Codex',
+              endpoint: '',
+              model: '',
+              protocol: 'codex',
+            ),
+          ],
+        ),
       );
+    } catch (_) {
+      // AI setup remains available in Settings when automatic discovery fails.
     }
-    if (recording) await stopRecording();
+  }
+
+  Future<bool> sendMessage(String text) async {
+    if (busy || !ready) return false;
+    final input = text.trim();
+    if (input.isEmpty) {
+      error = 'Напишите или продиктуйте сообщение';
+      notifyListeners();
+      return false;
+    }
+    if (input.length > 20000) {
+      error = 'Сообщение должно быть короче 20 000 символов';
+      notifyListeners();
+      return false;
+    }
+
+    busy = true;
+    error = null;
+    notice = null;
     intent = null;
+    if (recording) await stopRecording();
+    await repository.addChatMessage(
+      ChatMessage(
+        id: newId(),
+        role: ChatRole.user,
+        text: input,
+        createdAt: DateTime.now(),
+      ),
+    );
+    transcript = '';
+    notifyListeners();
+    unawaited(_resizeChat());
+
+    try {
+      final result = await _interpret(input);
+      intentOriginal = input;
+      aiProfile = result.profile;
+      final action = result.intent;
+      if (action.kind == 'answer' || action.kind == 'clarification') {
+        intent = null;
+      } else {
+        intent = action;
+      }
+      await repository.addChatMessage(
+        ChatMessage(
+          id: newId(),
+          role: ChatRole.assistant,
+          text: switch (action.kind) {
+            'answer' => action.text,
+            'clarification' => action.question ?? action.text,
+            'event' => 'Подготовил событие. Проверьте детали перед созданием.',
+            'task' => 'Подготовил задачу. Проверьте срок и напоминание.',
+            _ => 'Подготовил заметку. Проверьте текст перед сохранением.',
+          },
+          createdAt: DateTime.now(),
+        ),
+      );
+      if (result.attempts.isNotEmpty) {
+        notice = '${result.profile}: ${result.attempts.join('; ')}';
+      }
+    } catch (exception) {
+      final message = friendlyError(exception);
+      await repository.addChatMessage(
+        ChatMessage(
+          id: newId(),
+          role: ChatRole.assistant,
+          text: 'Не получилось ответить: $message',
+          createdAt: DateTime.now(),
+          isError: true,
+        ),
+      );
+    } finally {
+      busy = false;
+      notifyListeners();
+      unawaited(_resizeChat());
+    }
+    return true;
+  }
+
+  Future<AiResult> _interpret(String text, {bool includeToday = false}) async {
     final custom = File('${repository.root.path}/Rules/assistant.md');
     final rules = await custom.exists() ? await custom.readAsString() : _rules;
     final context = StringBuffer(attachment);
@@ -164,32 +255,71 @@ class AppModel extends ChangeNotifier {
         '\nOpen local tasks: ${jsonEncode(entries.where((e) => e.kind == EntryKind.task && !e.done).take(100).map((e) => e.toJson()).toList())}',
       );
     }
-    final result = await ai.interpret(
+    return ai.interpret(
       settings: settings,
       input: text,
       rules: rules,
       context: context.toString(),
+      conversation: chatMessages
+          .take(chatMessages.length - 1)
+          .map(
+            (message) => {'role': message.role.name, 'content': message.text},
+          )
+          .toList(),
     );
-    intent = result.intent;
-    intentOriginal = text;
-    aiProfile = result.profile;
-    await native.call<void>('expandWindow', {'page': -1});
-    if (result.attempts.isNotEmpty) {
-      notice = 'Использован ${result.profile}. ${result.attempts.join('; ')}';
+  }
+
+  Future<void> interpret(String text, {bool includeToday = false}) async {
+    await sendMessage(text);
+  }
+
+  Future<void> newChat() async {
+    if (recording) await stopRecording();
+    await repository.clearChat();
+    intent = null;
+    intentOriginal = '';
+    transcript = '';
+    attachment = '';
+    attachmentName = null;
+    error = null;
+    notice = null;
+    await _resizeChat(reset: true);
+    notifyListeners();
+  }
+
+  /// The header action is contextual: outside the chat it returns to the
+  /// current conversation; inside the chat it deliberately starts a new one.
+  Future<void> openChatOrCreateNew() async {
+    if (busy) return;
+    if (page != 0) {
+      await openPage(0);
+      return;
     }
-  });
+    await newChat();
+  }
+
+  Future<void> _resizeChat({bool reset = false}) async {
+    try {
+      await native.call<void>('resizeChat', {
+        'messages': reset ? 0 : chatMessages.length,
+        'hasAction': !reset && intent != null,
+      });
+    } catch (_) {
+      // Resizing is visual polish and must never interrupt the conversation.
+    }
+  }
 
   void manualIntent(String text, String kind) {
     intentOriginal = text;
     intent = Intent(kind: kind, text: text);
     error = null;
-    unawaited(native.call<void>('expandWindow', {'page': -1}));
+    unawaited(_resizeChat());
     notifyListeners();
   }
 
   void dismissIntent() {
     intent = null;
-    unawaited(native.call<void>('expandWindow', {'page': 0}));
+    unawaited(_resizeChat());
     notifyListeners();
   }
 
@@ -238,7 +368,15 @@ class AppModel extends ChangeNotifier {
     );
     await repository.add(entry);
     intent = null;
-    await native.call<void>('expandWindow', {'page': 0});
+    await repository.addChatMessage(
+      ChatMessage(
+        id: newId(),
+        role: ChatRole.assistant,
+        text: 'Готово — запись сохранена.',
+        createdAt: DateTime.now(),
+      ),
+    );
+    await _resizeChat();
     await _deliver(entry);
     notice = 'Запись сохранена. Статус интеграций — во входящих.';
     unawaited(sync());
@@ -450,7 +588,16 @@ class AppModel extends ChangeNotifier {
 
   Future<void> openPage(int index) async {
     page = index;
-    await native.call<void>('expandWindow', {'page': index});
+    try {
+      if (index == 0) {
+        await _resizeChat();
+      } else {
+        await native.call<void>('expandWindow', {'page': index});
+      }
+    } catch (exception) {
+      // A window-resize failure must not take down navigation or the chat.
+      error = friendlyError(exception);
+    }
     notifyListeners();
   }
 

@@ -5,13 +5,15 @@ import EventKit
 import Speech
 import AVFoundation
 import Security
+import ServiceManagement
 import UserNotifications
 import UniformTypeIdentifiers
 
 class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDelegate {
+  override var canBecomeKey: Bool { true }
+  override var canBecomeMain: Bool { true }
+
   private var bridge: FlutterMethodChannel!
-  private var statusItem: NSStatusItem!
-  private var statusMenu: NSMenu!
   private var hotkeys: [EventHotKeyRef?] = []
   private var hotkeyHandler: EventHandlerRef?
   private let eventStore = EKEventStore()
@@ -19,13 +21,15 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
   private var speechRequest: SFSpeechAudioBufferRecognitionRequest?
   private var speechTask: SFSpeechRecognitionTask?
   private var hasAudioTap = false
+  private var speechStarting = false
   private var speechGeneration = 0
+  private var chatHeight: CGFloat = 300
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     self.contentViewController = flutterViewController
-    self.setContentSize(NSSize(width: 370, height: 240))
-    self.minSize = NSSize(width: 340, height: 210)
+    self.setContentSize(NSSize(width: 430, height: chatHeight))
+    self.minSize = NSSize(width: 390, height: 280)
     self.maxSize = NSSize(width: 520, height: 820)
     self.title = "Local Mind"
     self.center()
@@ -36,34 +40,12 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
     configurePanel()
     bridge = FlutterMethodChannel(name: "local_mind/native", binaryMessenger: flutterViewController.engine.binaryMessenger)
     bridge.setMethodCallHandler { [weak self] call, result in self?.handle(call, result: result) }
-    configureMenu()
     configureHotkeys()
     UNUserNotificationCenter.current().delegate = self
     NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(wokeUp), name: NSWorkspace.didWakeNotification, object: nil)
-  }
-
-  private func configureMenu() {
-    statusItem = NSStatusBar.system.statusItem(withLength: 36)
-    statusItem.isVisible = true
-    statusItem.button?.title = "LM"
-    statusItem.button?.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
-    statusItem.button?.image = nil
-    statusItem.button?.imagePosition = .noImage
-    statusItem.button?.setAccessibilityLabel("Local Mind")
-    statusItem.button?.toolTip = "Local Mind"
-    statusItem.button?.target = self
-    statusItem.button?.action = #selector(statusItemClicked)
-    statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-    statusMenu = NSMenu()
-    let capture = statusMenu.addItem(withTitle: "Записать мысль    ⌃⌥Space", action: #selector(showCapture), keyEquivalent: "")
-    capture.target = self
-    let voice = statusMenu.addItem(withTitle: "Продиктовать    ⌃⌥⇧Space", action: #selector(showVoice), keyEquivalent: "")
-    voice.target = self
-    statusMenu.addItem(NSMenuItem.separator())
-    let settings = statusMenu.addItem(withTitle: "Настройки", action: #selector(showSettings), keyEquivalent: ",")
-    settings.target = self
-    statusMenu.addItem(NSMenuItem.separator())
-    statusMenu.addItem(withTitle: "Завершить Local Mind", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    // Local Mind is a menu-bar utility. It should not steal focus when macOS
+    // launches it at login; the panel opens from LM or the global shortcut.
+    orderOut(nil)
   }
 
   private func configurePanel() {
@@ -106,16 +88,10 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
     }
   }
 
-  @objc private func statusItemClicked() {
-    if NSApp.currentEvent?.type == .rightMouseUp, let button = statusItem.button {
-      statusMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
-      return
-    }
-    capture(voice: false, toggles: true)
-  }
-  @objc private func showCapture() { capture(voice: false) }
-  @objc private func showVoice() { capture(voice: true) }
-  @objc private func showSettings() {
+  func toggleCapturePanel() { capture(voice: false, toggles: true) }
+  func openCapturePanel() { capture(voice: false) }
+  func openVoicePanel() { capture(voice: true) }
+  func openSettingsPanel() {
     showPanel(page: 2)
     bridge.invokeMethod("navigate", arguments: 2)
   }
@@ -123,10 +99,10 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
     let availableHeight = (screen ?? NSScreen.main)?.visibleFrame.height ?? 720
     let targetSize: NSSize
     switch page {
-    case -1: targetSize = NSSize(width: 390, height: min(540, availableHeight - 24))
-    case 1: targetSize = NSSize(width: 390, height: min(520, availableHeight - 24))
-    case 2: targetSize = NSSize(width: 390, height: min(610, availableHeight - 24))
-    default: targetSize = NSSize(width: 370, height: 240)
+    case -1: targetSize = NSSize(width: 430, height: min(520, availableHeight * 0.5))
+    case 1: targetSize = NSSize(width: 430, height: min(540, availableHeight - 24))
+    case 2: targetSize = NSSize(width: 430, height: min(640, availableHeight - 24))
+    default: targetSize = NSSize(width: 430, height: min(chatHeight, availableHeight * 0.5))
     }
     setContentSize(targetSize)
     positionPanel()
@@ -168,6 +144,39 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
     case "expandWindow":
       let page = args["page"] as? Int ?? 0
       showPanel(page: page)
+      result(nil)
+    case "resizeChat":
+      let messages = args["messages"] as? Int ?? 0
+      let hasAction = args["hasAction"] as? Bool ?? false
+      resizeChat(messages: messages, hasAction: hasAction)
+      result(nil)
+    case "showCapture":
+      openCapturePanel()
+      result(nil)
+    case "showVoice":
+      openVoicePanel()
+      result(nil)
+    case "showSettings":
+      openSettingsPanel()
+      result(nil)
+    case "disableFallbackTray":
+      (NSApp.delegate as? AppDelegate)?.disableFallbackStatusItem()
+      result(nil)
+    case "launchAtLoginStatus":
+      result(SMAppService.mainApp.status == .enabled)
+    case "toggleLaunchAtLogin":
+      do {
+        if SMAppService.mainApp.status == .enabled {
+          try SMAppService.mainApp.unregister()
+        } else {
+          try SMAppService.mainApp.register()
+        }
+        result(SMAppService.mainApp.status == .enabled)
+      } catch {
+        fail(result, "Не удалось изменить автозапуск: \(error.localizedDescription)")
+      }
+    case "quit":
+      NSApp.terminate(nil)
       result(nil)
     case "hideWindow": stopSpeech(); orderOut(nil); result(nil)
     case "chooseDirectory", "chooseMarkdown":
@@ -244,6 +253,25 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
     }
   }
 
+  private func resizeChat(messages: Int, hasAction: Bool) {
+    let visible = (screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 720)
+    let content = CGFloat(min(max(messages - 1, 0), 4)) * 48
+    let action = hasAction ? CGFloat(150) : 0
+    chatHeight = min(max(300 + content + action, 300), max(300, visible.height * 0.5))
+    guard isVisible else { return }
+    let target = NSRect(
+      x: visible.maxX - 430 - 12,
+      y: visible.maxY - chatHeight - 10,
+      width: 430,
+      height: chatHeight
+    )
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0.18
+      context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+      animator().setFrame(target, display: true)
+    }
+  }
+
   private func keychainQuery(_ key: String) -> [String: Any] {
     [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "app.localmind.credentials", kSecAttrAccount as String: key]
   }
@@ -295,6 +323,11 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
         ]
         if let model = args["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           arguments.append(contentsOf: ["--model", model])
+        }
+        let supportedEfforts: Set<String> = ["low", "medium", "high", "xhigh"]
+        if let effort = args["reasoningEffort"] as? String,
+           supportedEfforts.contains(effort) {
+          arguments.append(contentsOf: ["-c", "model_reasoning_effort=\(effort)"])
         }
         arguments.append("-")
         process.arguments = arguments
@@ -372,37 +405,71 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
   }
 
   private func startSpeech(_ result: @escaping FlutterResult) {
-    stopSpeech()
+    guard !speechStarting && !audioEngine.isRunning else {
+      result(nil)
+      return
+    }
+    stopSpeech(notify: false)
+    speechStarting = true
+    speechGeneration += 1
+    let generation = speechGeneration
     SFSpeechRecognizer.requestAuthorization { authorization in
       guard authorization == .authorized else {
-        DispatchQueue.main.async { self.fail(result, "Разрешите распознавание речи в настройках конфиденциальности macOS") }; return
+        DispatchQueue.main.async {
+          guard generation == self.speechGeneration else { return }
+          self.speechStarting = false
+          self.fail(result, "Разрешите распознавание речи в настройках конфиденциальности macOS")
+        }
+        return
       }
       AVCaptureDevice.requestAccess(for: .audio) { granted in
         DispatchQueue.main.async {
-          guard granted else { self.fail(result, "Разрешите доступ к микрофону"); return }
-          self.beginRecognition(result)
+          guard generation == self.speechGeneration else { return }
+          guard granted else {
+            self.speechStarting = false
+            self.fail(result, "Разрешите доступ к микрофону")
+            return
+          }
+          self.beginRecognition(result, generation: generation)
         }
       }
     }
   }
 
-  private func beginRecognition(_ result: @escaping FlutterResult) {
+  private func beginRecognition(_ result: @escaping FlutterResult, generation: Int) {
+    guard generation == speechGeneration, speechStarting else { return }
     let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ru-RU"))
-    guard let recognizer = recognizer, recognizer.isAvailable else { fail(result, "Распознавание русской речи сейчас недоступно. Проверьте настройки диктовки macOS."); return }
-    guard recognizer.supportsOnDeviceRecognition else { fail(result, "На этом Mac недоступна локальная русская диктовка. Включите и загрузите русский язык в настройках диктовки macOS; пока можно использовать системную диктовку в текстовом поле."); return }
+    guard let recognizer = recognizer, recognizer.isAvailable else {
+      speechStarting = false
+      fail(result, "Распознавание русской речи сейчас недоступно. Проверьте настройки диктовки macOS.")
+      return
+    }
+    guard recognizer.supportsOnDeviceRecognition else {
+      speechStarting = false
+      fail(result, "На этом Mac недоступна локальная русская диктовка. Включите и загрузите русский язык в настройках диктовки macOS; пока можно использовать системную диктовку в текстовом поле.")
+      return
+    }
     let request = SFSpeechAudioBufferRecognitionRequest()
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     let input = audioEngine.inputNode
-    let format = input.outputFormat(forBus: 0)
-    guard format.sampleRate > 0, format.channelCount > 0 else { fail(result, "Микрофон недоступен"); return }
+    let format = input.inputFormat(forBus: 0)
+    guard format.sampleRate > 0, format.channelCount > 0 else {
+      speechStarting = false
+      fail(result, "Микрофон недоступен")
+      return
+    }
     speechRequest = request
-    speechGeneration += 1
-    let generation = speechGeneration
-    input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
+    input.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in request.append(buffer) }
     hasAudioTap = true
     audioEngine.prepare()
-    do { try audioEngine.start() } catch { stopSpeech(); fail(result, error.localizedDescription); return }
+    do {
+      try audioEngine.start()
+    } catch {
+      stopSpeech(notify: false)
+      fail(result, "Не удалось запустить микрофон: \(error.localizedDescription)")
+      return
+    }
     speechTask = recognizer.recognitionTask(with: request) { [weak self] response, error in
       DispatchQueue.main.async {
         guard let self = self, generation == self.speechGeneration else { return }
@@ -413,18 +480,20 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate, UNUserNotificationCenterDel
         }
       }
     }
+    speechStarting = false
     result(nil)
   }
 
-  private func stopSpeech() {
+  private func stopSpeech(notify: Bool = true) {
     speechGeneration += 1
-    audioEngine.stop()
+    speechStarting = false
+    if audioEngine.isRunning { audioEngine.stop() }
     if hasAudioTap { audioEngine.inputNode.removeTap(onBus: 0); hasAudioTap = false }
     speechRequest?.endAudio()
     speechTask?.cancel()
     speechRequest = nil
     speechTask = nil
-    bridge?.invokeMethod("speechEnded", arguments: nil)
+    if notify { bridge?.invokeMethod("speechEnded", arguments: nil) }
   }
 
   func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {

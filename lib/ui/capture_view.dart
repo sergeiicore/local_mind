@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart' hide Intent;
 import 'package:flutter/services.dart';
 
@@ -12,178 +14,446 @@ class CaptureView extends StatefulWidget {
 }
 
 class _CaptureViewState extends State<CaptureView> {
-  final text = TextEditingController();
+  final composer = TextEditingController();
   final focus = FocusNode();
+  final scroll = ScrollController();
   String voiceBase = '';
+  String voiceTranscript = '';
+  int previousMessageCount = 0;
+
   @override
   void initState() {
     super.initState();
+    previousMessageCount = widget.model.chatMessages.length;
+    focus.onKeyEvent = (_, event) {
+      if (event is! KeyDownEvent ||
+          event.logicalKey != LogicalKeyboardKey.enter) {
+        return KeyEventResult.ignored;
+      }
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        _insertLineBreak();
+        return KeyEventResult.handled;
+      }
+      if (!widget.model.busy) unawaited(send());
+      return KeyEventResult.handled;
+    };
+    widget.model.addListener(_modelChanged);
     widget.model.onCapture = () {
-      voiceBase = text.text;
+      voiceBase = composer.text;
+      voiceTranscript = '';
       focus.requestFocus();
     };
     widget.model.onTranscript = (value) {
-      text.text = '${voiceBase.isEmpty ? '' : '$voiceBase\n'}$value';
-      text.selection = TextSelection.collapsed(offset: text.text.length);
+      // Speech recognition sends partial results. An empty intermediate result
+      // must not erase the text that the user has already dictated.
+      if (value.trim().isEmpty) return;
+      voiceTranscript = value;
+      composer.text =
+          '${voiceBase.isEmpty ? '' : '$voiceBase\n'}$voiceTranscript';
+      composer.selection = TextSelection.collapsed(
+        offset: composer.text.length,
+      );
     };
+  }
+
+  void _modelChanged() {
+    final count = widget.model.chatMessages.length;
+    if (count == previousMessageCount) return;
+    previousMessageCount = count;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scroll.hasClients) return;
+      scroll.animateTo(
+        scroll.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 
   @override
   void dispose() {
     widget.model.onCapture = null;
     widget.model.onTranscript = null;
-    text.dispose();
+    widget.model.removeListener(_modelChanged);
+    composer.dispose();
     focus.dispose();
+    scroll.dispose();
     super.dispose();
   }
 
-  Future<void> save() async {
-    await widget.model.capture(text.text);
-    if (widget.model.error == null && mounted) text.clear();
+  Future<void> send() async {
+    final draft = composer.text;
+    if (draft.trim().isEmpty || widget.model.busy) {
+      focus.requestFocus();
+      return;
+    }
+    final accepted = await widget.model.sendMessage(draft);
+    if (accepted && mounted && composer.text == draft) {
+      composer.clear();
+      voiceBase = '';
+      voiceTranscript = '';
+    }
+    if (mounted) focus.requestFocus();
+  }
+
+  void _insertLineBreak() {
+    final selection = composer.selection;
+    final start = selection.isValid ? selection.start : composer.text.length;
+    final end = selection.isValid ? selection.end : composer.text.length;
+    if (composer.text.length - (end - start) >= 20000) return;
+    final text = composer.text.replaceRange(start, end, '\n');
+    composer.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: start + 1),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final model = widget.model;
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.enter, meta: true): () {
-          if (!model.busy) save();
-        },
-      },
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 18),
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainer,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: Theme.of(
-                  context,
-                ).colorScheme.outlineVariant.withValues(alpha: .45),
-              ),
-            ),
-            child: Column(
-              children: [
-                TextField(
-                  key: const Key('capture-input'),
-                  controller: text,
-                  focusNode: focus,
-                  autofocus: true,
-                  minLines: 3,
-                  maxLines: 7,
-                  maxLength: 100000,
-                  style: const TextStyle(fontSize: 16, height: 1.45),
-                  decoration: InputDecoration(
-                    hintText: model.recording
-                        ? 'Слушаю…'
-                        : 'Напишите мысль или задайте вопрос…',
-                    counterText: '',
-                    filled: false,
-                    border: InputBorder.none,
-                  ),
-                  onChanged: (_) {
-                    if (model.intent != null) model.dismissIntent();
-                  },
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(7, 0, 7, 7),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        tooltip: model.recording
-                            ? 'Остановить диктовку'
-                            : 'Продиктовать',
-                        onPressed: model.busy
-                            ? null
-                            : () {
-                                if (!model.recording) voiceBase = text.text;
-                                model.toggleRecording();
-                              },
-                        icon: Icon(
-                          model.recording
-                              ? Icons.stop_circle_outlined
-                              : Icons.mic_none_rounded,
-                          size: 19,
+    final messages = model.chatMessages;
+    return Column(
+      children: [
+        Expanded(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: messages.isEmpty && model.intent == null
+                ? const EmptyConversation(key: ValueKey('empty'))
+                : ListView.builder(
+                    key: const ValueKey('conversation'),
+                    controller: scroll,
+                    padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
+                    itemCount:
+                        messages.length +
+                        (model.busy ? 1 : 0) +
+                        (model.intent == null ? 0 : 1),
+                    itemBuilder: (context, index) {
+                      if (index < messages.length) {
+                        return ChatBubble(
+                          key: ValueKey(messages[index].id),
+                          message: messages[index],
+                        );
+                      }
+                      if (model.busy && index == messages.length) {
+                        return const _ThinkingBubble();
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: IntentCard(
+                          key: ObjectKey(model.intent),
+                          model: model,
+                          intent: model.intent!,
                         ),
-                        color: model.recording
-                            ? Theme.of(context).colorScheme.error
-                            : null,
-                      ),
-                      IconButton(
-                        tooltip:
-                            model.attachmentName ?? 'Приложить одну заметку',
-                        onPressed: model.busy ? null : model.attachNote,
-                        icon: const Icon(Icons.attach_file_rounded, size: 18),
-                      ),
-                      PopupMenuButton<String>(
-                        tooltip: 'Создать без AI',
-                        onSelected: (kind) =>
-                            model.manualIntent(text.text, kind),
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(
-                            value: 'event',
-                            child: Text('Событие в календаре'),
-                          ),
-                          PopupMenuItem(
-                            value: 'task',
-                            child: Text('Задача / напоминание'),
-                          ),
-                        ],
-                        icon: const Icon(Icons.more_horiz_rounded, size: 19),
-                      ),
-                      const Spacer(),
-                      IconButton.filledTonal(
-                        tooltip: 'Разобрать или спросить AI',
-                        onPressed: model.busy
-                            ? null
-                            : () => model.interpret(text.text),
-                        icon: const Icon(Icons.auto_awesome_outlined, size: 17),
-                      ),
-                      const SizedBox(width: 5),
-                      IconButton.filled(
-                        key: const Key('save-note'),
-                        tooltip: 'Сохранить дословно · ⌘ Enter',
-                        onPressed: model.busy ? null : save,
-                        icon: const Icon(Icons.arrow_upward_rounded, size: 19),
-                      ),
-                    ],
+                      );
+                    },
                   ),
-                ),
-              ],
-            ),
           ),
-          if (model.recording)
-            Padding(
-              padding: const EdgeInsets.only(top: 9, left: 5),
-              child: Text(
-                '● Слушаю на Mac',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.error,
-                  fontSize: 12,
-                ),
-              ),
-            ),
-          if (model.attachmentName != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
+        ),
+        if (model.attachmentName != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: InputChip(
-                avatar: const Icon(Icons.description_outlined, size: 15),
+                avatar: const Icon(Icons.description_outlined, size: 14),
                 label: Text(model.attachmentName!),
                 onDeleted: model.detachNote,
               ),
             ),
-          if (model.intent != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: IntentCard(
-                key: ObjectKey(model.intent),
-                model: model,
-                intent: model.intent!,
+          ),
+        _Composer(
+          controller: composer,
+          focusNode: focus,
+          model: model,
+          onSend: send,
+          onVoice: () {
+            if (!model.recording) voiceBase = composer.text;
+            model.toggleRecording();
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class EmptyConversation extends StatelessWidget {
+  const EmptyConversation({super.key});
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final compact = constraints.maxHeight < 150;
+      return Center(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: compact ? 6 : 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!compact) ...[
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: .1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.blur_on_rounded,
+                    size: 19,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(height: 11),
+              ],
+              Text(
+                'О чём думаете?',
+                style: TextStyle(
+                  fontSize: compact ? 15 : 17,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                compact
+                    ? 'Напишите или продиктуйте сообщение'
+                    : 'Напишите сообщение или продиктуйте его —\nответ останется в этом диалоге.',
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(height: 1.35),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class ChatBubble extends StatelessWidget {
+  const ChatBubble({super.key, required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final user = message.role == ChatRole.user;
+    final scheme = Theme.of(context).colorScheme;
+    return TweenAnimationBuilder<double>(
+      duration: const Duration(milliseconds: 180),
+      tween: Tween(begin: 0, end: 1),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 5 * (1 - value)),
+          child: child,
+        ),
+      ),
+      child: Align(
+        alignment: user ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 330),
+          margin: const EdgeInsets.only(bottom: 9),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          decoration: BoxDecoration(
+            color: user
+                ? scheme.primary.withValues(alpha: .11)
+                : message.isError
+                ? scheme.errorContainer.withValues(alpha: .55)
+                : scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(14),
+              topRight: const Radius.circular(14),
+              bottomLeft: Radius.circular(user ? 14 : 4),
+              bottomRight: Radius.circular(user ? 4 : 14),
+            ),
+          ),
+          child: SelectableText(
+            message.text,
+            style: const TextStyle(fontSize: 14, height: 1.42),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ThinkingBubble extends StatelessWidget {
+  const _ThinkingBubble();
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.centerLeft,
+    child: Container(
+      margin: const EdgeInsets.only(bottom: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: const SizedBox(
+        width: 15,
+        height: 15,
+        child: CircularProgressIndicator(strokeWidth: 1.6),
+      ),
+    ),
+  );
+}
+
+class _Composer extends StatelessWidget {
+  const _Composer({
+    required this.controller,
+    required this.focusNode,
+    required this.model,
+    required this.onSend,
+    required this.onVoice,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final AppModel model;
+  final VoidCallback onSend;
+  final VoidCallback onVoice;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainer,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: model.recording
+                ? scheme.error.withValues(alpha: .55)
+                : scheme.outlineVariant.withValues(alpha: .5),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: .035),
+              blurRadius: 14,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const Key('chat-input'),
+              controller: controller,
+              focusNode: focusNode,
+              readOnly: model.busy,
+              autofocus: true,
+              minLines: 1,
+              maxLines: 5,
+              maxLength: 20000,
+              style: const TextStyle(fontSize: 14.5, height: 1.4),
+              decoration: InputDecoration(
+                hintText: model.recording
+                    ? 'Слушаю…'
+                    : 'Сообщение для Local Mind',
+                counterText: '',
+                filled: false,
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
               ),
             ),
-        ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(5, 0, 6, 5),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: model.recording
+                        ? 'Остановить диктовку'
+                        : 'Продиктовать',
+                    onPressed: model.busy ? null : onVoice,
+                    icon: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 160),
+                      child: Icon(
+                        model.recording
+                            ? Icons.stop_circle_rounded
+                            : Icons.mic_none_rounded,
+                        key: ValueKey(model.recording),
+                        size: 18,
+                      ),
+                    ),
+                    color: model.recording ? scheme.error : null,
+                  ),
+                  IconButton(
+                    tooltip: model.attachmentName ?? 'Приложить заметку',
+                    onPressed: model.busy ? null : model.attachNote,
+                    icon: const Icon(Icons.attach_file_rounded, size: 17),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: 'Создать без AI',
+                    onSelected: (kind) =>
+                        model.manualIntent(controller.text, kind),
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        value: 'event',
+                        child: Text('Событие в календаре'),
+                      ),
+                      PopupMenuItem(
+                        value: 'task',
+                        child: Text('Задача / напоминание'),
+                      ),
+                    ],
+                    icon: const Icon(Icons.more_horiz_rounded, size: 18),
+                  ),
+                  const Spacer(),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: controller,
+                    builder: (context, value, _) {
+                      final canSend =
+                          !model.busy && value.text.trim().isNotEmpty;
+                      return Semantics(
+                        button: true,
+                        enabled: canSend,
+                        child: ExcludeSemantics(
+                          child: IconButton.filled(
+                            key: const Key('chat-send-button'),
+                            tooltip: 'Отправить',
+                            // Keep the arrow visible for an empty draft. The
+                            // no-op still prevents an empty request; a normal
+                            // disabled IconButton fades it out on macOS.
+                            onPressed: () {
+                              if (canSend) onSend();
+                            },
+                            icon: const Icon(
+                              Icons.arrow_upward_rounded,
+                              size: 18,
+                            ),
+                            style: IconButton.styleFrom(
+                              backgroundColor: canSend
+                                  ? scheme.primary
+                                  : scheme.surfaceContainerHigh,
+                              foregroundColor: canSend
+                                  ? scheme.onPrimary
+                                  : scheme.onSurfaceVariant,
+                              minimumSize: const Size(34, 34),
+                              padding: EdgeInsets.zero,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

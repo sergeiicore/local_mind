@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_mind/data/local_repository.dart';
+import 'package:local_mind/domain/models.dart';
 
 void main() {
   group('LocalRepository', () {
@@ -45,6 +46,30 @@ void main() {
 
       expect(restored.entries.single.text, 'Напомнить про встречу');
       expect(restored.entries.single.source, 'telegram');
+    });
+
+    test('persists the active conversation and clears only chat', () async {
+      await repository.addChatMessage(
+        ChatMessage(
+          id: 'message-1',
+          role: ChatRole.user,
+          text: 'Привет',
+          createdAt: DateTime(2026, 9, 10),
+        ),
+      );
+      await repository.importText(
+        identity: 'note-1',
+        text: 'Важная заметка',
+        source: 'text',
+      );
+
+      final restored = LocalRepository(directory);
+      await restored.load();
+      expect(restored.chatMessages.single.text, 'Привет');
+
+      await restored.clearChat();
+      expect(restored.chatMessages, isEmpty);
+      expect(restored.entries.single.text, 'Важная заметка');
     });
   });
 }

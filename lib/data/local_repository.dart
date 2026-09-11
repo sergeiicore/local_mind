@@ -8,9 +8,11 @@ class LocalRepository {
   LocalRepository(this.root);
   final Directory root;
   List<Entry> _entries = [];
+  List<ChatMessage> _chatMessages = [];
   Settings settings = const Settings();
   Map<String, String> imported = {};
   List<Entry> get entries => List.unmodifiable(_entries);
+  List<ChatMessage> get chatMessages => List.unmodifiable(_chatMessages);
   Future<void> _pending = Future.value();
   String? recoveryNotice;
 
@@ -49,7 +51,14 @@ class LocalRepository {
       Map<String, dynamic>.from(json['settings'] as Map),
     );
     final imported = Map<String, String>.from(json['imported'] as Map? ?? {});
+    final chatMessages = (json['chatMessages'] as List<dynamic>? ?? [])
+        .map(
+          (message) =>
+              ChatMessage.fromJson(Map<String, dynamic>.from(message as Map)),
+        )
+        .toList();
     _entries = entries;
+    _chatMessages = chatMessages;
     this.settings = settings;
     this.imported = imported;
   }
@@ -73,6 +82,7 @@ class LocalRepository {
     'version': 1,
     'settings': settings.toJson(),
     'entries': _entries.map((e) => e.toJson()).toList(),
+    'chatMessages': _chatMessages.map((message) => message.toJson()).toList(),
     'imported': imported,
   });
   Future<void> _persist(String value) async {
@@ -88,6 +98,12 @@ class LocalRepository {
   Future<void> add(Entry entry) => _transaction(() {
     if (!_entries.any((e) => e.id == entry.id)) _entries.insert(0, entry);
   });
+  Future<void> addChatMessage(ChatMessage message) => _transaction(() {
+    if (!_chatMessages.any((item) => item.id == message.id)) {
+      _chatMessages.add(message);
+    }
+  });
+  Future<void> clearChat() => _transaction(_chatMessages.clear);
   Future<void> update(String id, Entry Function(Entry) transform) =>
       _transaction(() {
         _entries = _entries.map((e) => e.id == id ? transform(e) : e).toList();

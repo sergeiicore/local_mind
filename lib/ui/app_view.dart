@@ -12,9 +12,9 @@ class LocalMindApp extends StatelessWidget {
   ThemeData theme(Brightness brightness) {
     final dark = brightness == Brightness.dark;
     final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xff546b64),
+      seedColor: const Color(0xff536271),
       brightness: brightness,
-      surface: dark ? const Color(0xff202224) : const Color(0xfffafaf9),
+      surface: dark ? const Color(0xff1d1f21) : const Color(0xfffbfbfa),
     );
     return ThemeData(
       useMaterial3: true,
@@ -23,9 +23,10 @@ class LocalMindApp extends StatelessWidget {
       fontFamily: '.AppleSystemUIFont',
       scaffoldBackgroundColor: scheme.surface,
       visualDensity: VisualDensity.compact,
+      splashFactory: NoSplash.splashFactory,
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: dark ? const Color(0xff292c2d) : const Color(0xfff0f1ef),
+        fillColor: dark ? const Color(0xff282a2d) : const Color(0xfff2f2f0),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
           borderSide: BorderSide.none,
@@ -34,7 +35,7 @@ class LocalMindApp extends StatelessWidget {
       ),
       cardTheme: CardThemeData(
         elevation: 0,
-        color: dark ? const Color(0xff292c2d) : Colors.white,
+        color: dark ? const Color(0xff27292c) : const Color(0xffffffff),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(14),
           side: BorderSide(color: scheme.outlineVariant.withValues(alpha: .45)),
@@ -157,7 +158,12 @@ class _PanelHeader extends StatelessWidget {
               style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
             ),
           ),
-          _destination(0, Icons.add_rounded, 'Новая мысль'),
+          IconButton(
+            key: const Key('new-chat'),
+            tooltip: 'Новый чат',
+            onPressed: model.busy ? null : model.openChatOrCreateNew,
+            icon: const Icon(Icons.add_rounded, size: 18),
+          ),
           _destination(1, Icons.history_rounded, 'История'),
           _destination(2, Icons.tune_rounded, 'Настройки'),
           IconButton(

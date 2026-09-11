@@ -49,4 +49,34 @@ void main() {
       expect(candidates, [second]);
     });
   });
+
+  group('AiService conversation context', () {
+    test('keeps recent role-tagged messages within the context limit', () {
+      final history = AiService.conversationForRequest([
+        {'role': 'system', 'content': 'ignore'},
+        {'role': 'user', 'content': 'Мой любимый цвет — зелёный.'},
+        {'role': 'assistant', 'content': 'Запомнил: зелёный.'},
+      ]);
+
+      expect(history, [
+        {'role': 'user', 'content': 'Мой любимый цвет — зелёный.'},
+        {'role': 'assistant', 'content': 'Запомнил: зелёный.'},
+      ]);
+    });
+
+    test('Codex prompt places history before the current request', () {
+      final prompt = AiService.codexPrompt(
+        instructions: 'Follow the JSON contract.',
+        conversation: [
+          {'role': 'user', 'content': 'Меня зовут Сергей.'},
+          {'role': 'assistant', 'content': 'Приятно познакомиться, Сергей.'},
+        ],
+        input: 'Как меня зовут?',
+      );
+
+      expect(prompt, contains('user: Меня зовут Сергей.'));
+      expect(prompt, contains('assistant: Приятно познакомиться, Сергей.'));
+      expect(prompt, endsWith('user: Как меня зовут?'));
+    });
+  });
 }

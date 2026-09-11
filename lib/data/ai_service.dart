@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/services.dart';
 
 import '../domain/models.dart';
@@ -17,6 +15,10 @@ class AiService {
   AiService(this.network, this.native);
   final NetworkService network;
   final NativeService native;
+
+  static const _maxConversationMessages = 16;
+  static const _maxConversationCharacters = 24000;
+  static const _maxMessageCharacters = 4000;
 
   static Uri endpoint(AiProfile profile) {
     if (profile.isCodex) {
@@ -58,11 +60,65 @@ For a reminder use task with start as its due time. For a calendar booking use e
 For missing required details use clarification. For a question use answer, using only supplied facts.
 ''';
 
+  /// Returns the latest complete turns in the format expected by chat models.
+  /// Keeping the newest turns is more useful than sending a large, truncated
+  /// transcript that loses the immediate question and answer.
+  static List<Map<String, String>> conversationForRequest(
+    List<Map<String, String>> conversation,
+  ) {
+    final usable = conversation
+        .where(
+          (message) =>
+              (message['role'] == 'user' || message['role'] == 'assistant') &&
+              (message['content']?.trim().isNotEmpty ?? false),
+        )
+        .map(
+          (message) => {
+            'role': message['role']!,
+            'content': _truncate(message['content']!.trim()),
+          },
+        )
+        .toList();
+    final retained = <Map<String, String>>[];
+    var characters = 0;
+    for (final message in usable.reversed) {
+      final nextCharacters = characters + message['content']!.length;
+      if (retained.length == _maxConversationMessages ||
+          (retained.isNotEmpty &&
+              nextCharacters > _maxConversationCharacters)) {
+        break;
+      }
+      retained.add(message);
+      characters = nextCharacters;
+    }
+    return retained.reversed.toList();
+  }
+
+  static String codexPrompt({
+    required String instructions,
+    required List<Map<String, String>> conversation,
+    required String input,
+  }) {
+    final transcript = conversation
+        .map((message) => '${message['role']}: ${message['content']}')
+        .join('\n\n');
+    return [
+      instructions,
+      if (transcript.isNotEmpty) 'Conversation so far:\n$transcript',
+      'user: $input',
+    ].join('\n\n');
+  }
+
+  static String _truncate(String value) => value.length <= _maxMessageCharacters
+      ? value
+      : '${value.substring(0, _maxMessageCharacters)}…';
+
   Future<AiResult> interpret({
     required Settings settings,
     required String input,
     required String rules,
     String context = '',
+    List<Map<String, String>> conversation = const [],
   }) async {
     final profiles = candidates(settings);
     if (profiles.isEmpty) {
@@ -73,16 +129,23 @@ For missing required details use clarification. For a question use answer, using
     final attempts = <String>[];
     for (final profile in profiles) {
       try {
-        final system =
-            '$rules\n$contract\nCurrent local time: ${localStamp(DateTime.now())}. Time zone: ${DateTime.now().timeZoneName}.';
-        final user = jsonEncode({
-          'request': input,
-          'explicitlyAttachedContext': context,
-        });
+        final history = conversationForRequest(conversation);
+        final system = [
+          rules,
+          contract,
+          'Current local time: ${localStamp(DateTime.now())}. Time zone: ${DateTime.now().timeZoneName}.',
+          if (context.trim().isNotEmpty)
+            'Relevant context explicitly attached by the user:\n${context.trim()}',
+        ].join('\n\n');
         if (profile.isCodex) {
           final text = await native.call<String>('runCodex', {
             'model': profile.model,
-            'prompt': '$system\n\n$user',
+            'reasoningEffort': profile.reasoningEffort,
+            'prompt': codexPrompt(
+              instructions: system,
+              conversation: history,
+              input: input,
+            ),
           });
           if (text == null || text.trim().isEmpty) {
             throw const ApiException('Codex не вернул ответ');
@@ -100,7 +163,15 @@ For missing required details use clarification. For a question use answer, using
           result = await network.post(uri, {
             'model': profile.model,
             'instructions': system,
-            'input': user,
+            'input': [
+              ...history.map(
+                (message) => {
+                  'role': message['role'],
+                  'content': message['content'],
+                },
+              ),
+              {'role': 'user', 'content': input},
+            ],
             'store': false,
             'text': {
               'format': {'type': 'json_object'},
@@ -111,7 +182,8 @@ For missing required details use clarification. For a question use answer, using
             'model': profile.model,
             'messages': [
               {'role': 'system', 'content': system},
-              {'role': 'user', 'content': user},
+              ...history,
+              {'role': 'user', 'content': input},
             ],
             'response_format': {'type': 'json_object'},
           }, token: key);

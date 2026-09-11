@@ -78,9 +78,7 @@ class AiProfilesDialog extends StatelessWidget {
                     ),
                     title: Text(profile.name),
                     subtitle: Text(
-                      profile.model.isEmpty
-                          ? profile.providerLabel
-                          : '${profile.providerLabel} · ${profile.model}',
+                      _profileSummary(profile),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -91,11 +89,10 @@ class AiProfilesDialog extends StatelessWidget {
                         if (action == 'remove') _remove(profile);
                       },
                       itemBuilder: (_) => [
-                        if (!profile.isCodex)
-                          const PopupMenuItem(
-                            value: 'edit',
-                            child: Text('Изменить'),
-                          ),
+                        const PopupMenuItem(
+                          value: 'edit',
+                          child: Text('Изменить'),
+                        ),
                         const PopupMenuItem(
                           value: 'remove',
                           child: Text('Удалить'),
@@ -157,7 +154,9 @@ class AiProfilesDialog extends StatelessWidget {
   Future<void> _edit(BuildContext context, [AiProfile? existing]) async {
     final result = await showDialog<ProfileDraft>(
       context: context,
-      builder: (_) => ProfileDialog(profile: existing),
+      builder: (_) => existing?.isCodex == true
+          ? CodexProfileDialog(profile: existing!)
+          : ProfileDialog(profile: existing),
     );
     if (result == null) return;
     await model.run(() async {
@@ -194,6 +193,19 @@ class AiProfilesDialog extends StatelessWidget {
     );
     model.notice = 'AI-профиль удалён';
   });
+
+  String _profileSummary(AiProfile profile) {
+    if (!profile.isCodex) {
+      return profile.model.isEmpty
+          ? profile.providerLabel
+          : '${profile.providerLabel} · ${profile.model}';
+    }
+    final model = profile.model.isEmpty ? 'стандартная модель' : profile.model;
+    final effort = profile.reasoningEffort.isEmpty
+        ? 'по умолчанию'
+        : profile.reasoningEffort;
+    return 'Codex · $model · $effort';
+  }
 }
 
 class ProfileDraft {
@@ -201,6 +213,93 @@ class ProfileDraft {
 
   final AiProfile profile;
   final String key;
+}
+
+class CodexProfileDialog extends StatefulWidget {
+  const CodexProfileDialog({super.key, required this.profile});
+
+  final AiProfile profile;
+
+  @override
+  State<CodexProfileDialog> createState() => _CodexProfileDialogState();
+}
+
+class _CodexProfileDialogState extends State<CodexProfileDialog> {
+  static const _efforts = ['', 'low', 'medium', 'high', 'xhigh'];
+
+  late final aiModel = TextEditingController(text: widget.profile.model);
+  late String effort = _efforts.contains(widget.profile.reasoningEffort)
+      ? widget.profile.reasoningEffort
+      : '';
+
+  @override
+  void dispose() {
+    aiModel.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Codex'),
+    content: SizedBox(
+      width: 390,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: aiModel,
+            autocorrect: false,
+            decoration: const InputDecoration(
+              labelText: 'Модель Codex',
+              hintText: 'Пусто — выбор Codex по умолчанию',
+            ),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: effort,
+            decoration: const InputDecoration(labelText: 'Уровень рассуждений'),
+            items: const [
+              DropdownMenuItem(value: '', child: Text('По умолчанию')),
+              DropdownMenuItem(value: 'low', child: Text('Low')),
+              DropdownMenuItem(value: 'medium', child: Text('Medium')),
+              DropdownMenuItem(value: 'high', child: Text('High')),
+              DropdownMenuItem(value: 'xhigh', child: Text('Extra high')),
+            ],
+            onChanged: (value) => setState(() => effort = value ?? ''),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Настройки применяются только к запросам через этот профиль.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Отмена'),
+      ),
+      FilledButton(onPressed: _save, child: const Text('Сохранить')),
+    ],
+  );
+
+  void _save() => Navigator.pop(
+    context,
+    ProfileDraft(
+      AiProfile(
+        id: widget.profile.id,
+        name: widget.profile.name,
+        endpoint: widget.profile.endpoint,
+        model: aiModel.text.trim(),
+        protocol: 'codex',
+        reasoningEffort: effort,
+        enabled: widget.profile.enabled,
+      ),
+      '',
+    ),
+  );
 }
 
 class ProfileDialog extends StatefulWidget {

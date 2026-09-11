@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  nativeapi: ^0.2.0
 
 dev_dependencies:
   flutter_test:
@@ -19,3 +20,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/rules/
+    - macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_32.png

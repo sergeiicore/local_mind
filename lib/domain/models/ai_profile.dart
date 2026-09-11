@@ -5,6 +5,7 @@ class AiProfile {
     required this.endpoint,
     required this.model,
     this.protocol = 'chat',
+    this.reasoningEffort = '',
     this.enabled = true,
   });
 
@@ -13,6 +14,9 @@ class AiProfile {
   final String endpoint;
   final String model;
   final String protocol;
+
+  /// Optional Codex reasoning level. An empty value keeps the CLI default.
+  final String reasoningEffort;
   final bool enabled;
 
   bool get isCodex => protocol == 'codex';
@@ -38,6 +42,7 @@ class AiProfile {
     'endpoint': endpoint,
     'model': model,
     'protocol': protocol,
+    'reasoningEffort': reasoningEffort,
     'enabled': enabled,
   };
 
@@ -47,6 +52,7 @@ class AiProfile {
     endpoint: json['endpoint'] as String,
     model: json['model'] as String,
     protocol: json['protocol'] as String? ?? 'chat',
+    reasoningEffort: json['reasoningEffort'] as String? ?? '',
     enabled: json['enabled'] != false,
   );
 }

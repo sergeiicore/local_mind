@@ -398,7 +398,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.localMind.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/local_mind.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/local_mind";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Local Mind.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Local Mind";
 			};
 			name = Debug;
 		};
@@ -412,7 +412,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.localMind.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/local_mind.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/local_mind";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Local Mind.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Local Mind";
 			};
 			name = Release;
 		};
@@ -426,7 +426,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.localMind.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/local_mind.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/local_mind";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Local Mind.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Local Mind";
 			};
 			name = Profile;
 		};
@@ -488,7 +488,10 @@
 				CODE_SIGN_ENTITLEMENTS = Runner/DebugProfile.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_DEBUG_DYLIB = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Local Mind использует микрофон только при включённой диктовке.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Local Mind преобразует вашу речь в текст заметки.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -620,7 +623,10 @@
 				CODE_SIGN_ENTITLEMENTS = Runner/DebugProfile.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_DEBUG_DYLIB = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Local Mind использует микрофон только при включённой диктовке.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Local Mind преобразует вашу речь в текст заметки.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -641,6 +647,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				INFOPLIST_FILE = Runner/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Local Mind использует микрофон только при включённой диктовке.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Local Mind преобразует вашу речь в текст заметки.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
